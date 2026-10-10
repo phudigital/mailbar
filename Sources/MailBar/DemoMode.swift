@@ -82,6 +82,7 @@ enum DemoMode {
         let view = content
             .environmentObject(AccountStore.shared)
             .environmentObject(MailChecker.shared)
+            .environmentObject(Updater.shared)
             .background(Color(nsColor: .windowBackgroundColor))
         let hosting = NSHostingView(rootView: view)
         let window = NSWindow(contentRect: NSRect(x: -5000, y: 0, width: 400, height: 300),
