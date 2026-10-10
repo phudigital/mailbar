@@ -35,6 +35,7 @@ mail-menubar/
 ├── CLAUDE.md                 ← trỏ tới AGENTS.md
 ├── README.md                 ← hướng dẫn cho người dùng cuối
 ├── CHANGELOG.md              ← lịch sử phiên bản (cập nhật mỗi lần phát hành)
+├── workflow-next-step.md    ← nhật ký việc đã làm / việc có thể làm tiếp / bài học (agent đọc đầu phiên, cập nhật cuối phiên — mục 10)
 ├── VERSION                   ← số phiên bản duy nhất (vd. 1.0.0) — build.sh đọc file này
 ├── packaging/
 │   └── Doc-truoc-khi-cai.txt ← hướng dẫn cài đặt, được copy vào DMG thành "Đọc trước khi cài.txt"
@@ -422,4 +423,22 @@ Làm theo mẫu `checkSpam`:
 - Trình đọc thư chưa hiển thị ảnh nhúng `cid:`, chưa tải được tệp đính kèm, chưa có trả lời/soạn thư (SMTP).
 - Chưa có test target, chưa có localization. Tự cập nhật chỉ dùng được giữa các bản cùng chữ ký (mục 3.7), chưa có kênh beta, chưa có công chứng Apple.
 
-Gợi ý ưu tiên tiếp theo: Archive cho Gmail (`UID MOVE` vào thư mục có cờ `\All`), IMAP IDLE cho tài khoản chính, ký Developer ID + notarize.
+Gợi ý ưu tiên tiếp theo: xem danh sách đầy đủ, có vị trí file và hướng sửa, trong `workflow-next-step.md` (mục 2). Tóm tắt: sửa nốt các lỗi đã xác nhận ở bản 2.0.0 (header `From:` giả, charset gb2312, entity HTML, rollback cập nhật), Archive cho Gmail (`UID MOVE` vào thư mục có cờ `\All`), IMAP IDLE, ký Developer ID + notarize.
+
+---
+
+## 10. Quy định làm việc với `workflow-next-step.md` (bắt buộc cho AI agent)
+
+`workflow-next-step.md` là nhật ký sống của dự án: việc đã xong, việc có thể làm tiếp (kèm vị trí file và hướng sửa), và bài học đã trả giá.
+
+1. **Đầu phiên**: đọc `workflow-next-step.md` (ít nhất mục 2 và 3) cùng `AGENTS.md` trước khi sửa code. Trước khi đề xuất hoặc làm một việc, kiểm tra nó đã có trong danh sách chưa, đã làm chưa, hoặc có bài học liên quan (vd cách thử Keychain, chia việc cho sub-agent).
+2. **Cuối phiên** (khi kết thúc một thay đổi có ý nghĩa, và **luôn luôn** khi phát hành): cập nhật `workflow-next-step.md` trong cùng lượt làm việc:
+   - thêm dòng vào mục 1 "Đã xong" (phiên bản, nội dung chính, file chính);
+   - **xoá hoặc chuyển** các mục ở mục 2 đã làm xong (đừng để danh sách lỗi thời);
+   - thêm việc mới phát hiện được vào mục 2 (kèm `file:dòng`, hậu quả, hướng sửa); phát hiện chưa được kiểm chứng ghi riêng ở mục 2.2;
+   - thêm vào mục 3 mọi bài học không hiển nhiên (cách kiểm thử, bẫy đã vấp, quyết định của người dùng và lý do);
+   - sửa dòng "Cập nhật lần cuối".
+3. Không dán dữ liệu nhạy cảm (mật khẩu, token, nội dung thư thật, đường dẫn khoá ký) vào file này — repo là **công khai**.
+4. File này bổ sung chứ không thay `CHANGELOG.md` (lịch sử cho người dùng) và `AGENTS.md` (kiến trúc, quy ước). Điều gì thay đổi hành vi hoặc cấu trúc vẫn phải cập nhật `AGENTS.md` và `README.md` theo mục 7.
+5. Khi người dùng dừng giữa chừng hoặc yêu cầu phát hành sớm, ghi rõ phần dở/chưa kiểm chứng vào mục 2 thay vì bỏ lửng.
+
