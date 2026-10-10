@@ -1,0 +1,31 @@
+MailBar — kiểm tra thư trên menubar macOS
+==========================================
+
+CÀI ĐẶT
+1. Kéo MailBar.app vào thư mục Applications (biểu tượng bên cạnh).
+2. Mở Applications và nhấp đúp MailBar.
+
+NẾU MACOS BÁO "KHÔNG THỂ MỞ" / "NHÀ PHÁT TRIỂN KHÔNG XÁC ĐỊNH"
+Bản này chưa được Apple công chứng (notarize), nên lần đầu cần cho phép thủ công:
+  • macOS 15 trở lên: mở MailBar một lần (sẽ bị chặn) → System Settings → Privacy & Security
+    → kéo xuống, bấm "Open Anyway" → nhập mật khẩu máy.
+  • macOS 13–14: chuột phải (hoặc Control + click) vào MailBar.app → Open → Open.
+  • Hoặc chạy lệnh trong Terminal:
+        xattr -dr com.apple.quarantine /Applications/MailBar.app
+
+LẦN ĐẦU SỬ DỤNG
+1. Cửa sổ Cài đặt tự mở. Bấm "+" và chọn nhà cung cấp (Gmail, Lark, Yandex…).
+2. Nhập email và MẬT KHẨU ỨNG DỤNG (không phải mật khẩu đăng nhập thường):
+   • Gmail : bật Xác minh 2 bước → https://myaccount.google.com/apppasswords
+   • Lark  : app Lark trên máy tính → Settings → Email → Third-party email client login → Generate
+   • Yandex: bật IMAP trong cài đặt mail → https://id.yandex.com/security/app-passwords
+3. Bấm "Kiểm tra kết nối" rồi bấm "Thêm tài khoản".
+4. Khi macOS hỏi quyền truy cập Keychain, bấm "Always Allow" (nhập mật khẩu máy Mac).
+5. Bấm icon phong bì trên menubar để xem thư.
+
+GỠ CÀI ĐẶT
+Thoát MailBar, xoá /Applications/MailBar.app.
+Muốn xoá cả cấu hình, chạy trong Terminal: defaults delete com.phudigital.MailBar
+(Mật khẩu nằm trong ứng dụng Keychain Access, mục "MailBar".)
+
+© Phu Digital
