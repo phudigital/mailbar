@@ -13,6 +13,8 @@ struct MailWebView: NSViewRepresentable {
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.defaultWebpagePreferences.allowsContentJavaScript = false
+        // Không lưu cookie/cache của nội dung từ xa lên đĩa.
+        config.websiteDataStore = .nonPersistent()
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
@@ -33,7 +35,12 @@ struct MailWebView: NSViewRepresentable {
             webView.loadHTMLString(content, baseURL: nil)
         } else {
             RemoteContentBlocker.ruleList { list in
-                if let list { controller.add(list) }
+                guard let list else {
+                    // Không dựng được bộ chặn thì KHÔNG tải thư (tránh lộ IP/theo dõi qua ảnh từ xa).
+                    webView.loadHTMLString("<body style='font:13px -apple-system;margin:14px'>Không chặn được nội dung từ xa nên chưa hiển thị thư. Dùng nút Mở web hoặc bật tải hình ảnh.</body>", baseURL: nil)
+                    return
+                }
+                controller.add(list)
                 webView.loadHTMLString(content, baseURL: nil)
             }
         }
@@ -56,12 +63,22 @@ struct MailWebView: NSViewRepresentable {
         func webView(_ webView: WKWebView,
                      decidePolicyFor navigationAction: WKNavigationAction,
                      decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-            if navigationAction.navigationType == .linkActivated, let url = navigationAction.request.url {
-                NSWorkspace.shared.open(url)
-                decisionHandler(.cancel)
-            } else {
-                decisionHandler(.allow)
+            guard let url = navigationAction.request.url else { return decisionHandler(.cancel) }
+            if navigationAction.navigationType == .linkActivated {
+                Self.openExternally(url)
+                return decisionHandler(.cancel)
             }
+            // Chỉ cho lần tải HTML ban đầu (about:blank); chặn chuyển trang ngay trong bảng (meta refresh, form, …).
+            if navigationAction.targetFrame?.isMainFrame != false, url.scheme?.lowercased() != "about" {
+                return decisionHandler(.cancel)
+            }
+            decisionHandler(.allow)
+        }
+
+        /// Chỉ mở link http/https/mailto bằng ứng dụng mặc định; scheme lạ (file:, javascript:, tel:…) bị bỏ.
+        static func openExternally(_ url: URL) {
+            guard let scheme = url.scheme?.lowercased(), ["http", "https", "mailto"].contains(scheme) else { return }
+            NSWorkspace.shared.open(url)
         }
 
         /// Thư HTML thiết kế rộng (thường 600px) được thu nhỏ cho vừa bề ngang bảng.
@@ -78,7 +95,7 @@ struct MailWebView: NSViewRepresentable {
         // Link target="_blank".
         func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                      for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-            if let url = navigationAction.request.url { NSWorkspace.shared.open(url) }
+            if let url = navigationAction.request.url { Self.openExternally(url) }
             return nil
         }
     }

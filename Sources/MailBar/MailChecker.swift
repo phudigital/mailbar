@@ -30,6 +30,13 @@ final class MailChecker: ObservableObject {
     private var headerCache: [UUID: [MessageKey: MailMessage]] = [:]
     /// Tài khoản đang tải sẵn nội dung thư (mỗi tài khoản một lượt tại một thời điểm).
     private var prefetching: Set<UUID> = []
+    /// Thế hệ cấu hình của tài khoản: `reset`/xoá/tắt tăng lên, nên `check` đang chạy dở với cấu hình cũ tự bỏ kết quả.
+    private var epoch: [UUID: Int] = [:]
+    /// Lần thử lại liên tiếp sau lỗi mạng tạm thời (vd. Wi-Fi chưa lên lại sau khi máy thức dậy).
+    private var retries: [UUID: Int] = [:]
+    private static let retryDelays: [UInt64] = [15, 45]
+    /// Message-ID của thư vừa "Không phải spam": về Hộp thư đến với UID mới nên không được báo như thư mới.
+    private var movedBack: Set<String> = []
     /// Số thư tải sẵn tối đa mỗi lượt cho một tài khoản (mới nhất trước) — tránh tải cả loạt thư cũ ở lần mở app đầu.
     private static let prefetchLimit = 20
     private var timer: Timer?
@@ -68,6 +75,8 @@ final class MailChecker: ObservableObject {
                 self.statuses = self.statuses.filter { active.contains($0.key) }
                 self.knownKeys = self.knownKeys.filter { active.contains($0.key) }
                 self.headerCache = self.headerCache.filter { active.contains($0.key) }
+                for id in self.epoch.keys where !active.contains(id) { self.epoch[id, default: 0] += 1 }
+                self.retries = self.retries.filter { active.contains($0.key) }
                 Task.detached { MessageCache.removeAll(except: active) }
             }
             .store(in: &cancellables)
@@ -109,6 +118,8 @@ final class MailChecker: ObservableObject {
         statuses[account.id] = nil
         knownKeys[account.id] = nil
         headerCache[account.id] = nil
+        epoch[account.id, default: 0] += 1
+        retries[account.id] = nil
         let id = account.id
         Task.detached { MessageCache.removeAccount(id) }
         if account.enabled { Task { await check(account) } }
@@ -117,6 +128,7 @@ final class MailChecker: ObservableObject {
     func check(_ account: MailAccount) async {
         if statuses[account.id]?.isChecking == true { return }
         statuses[account.id, default: Status()].isChecking = true
+        let myEpoch = epoch[account.id, default: 0]
 
         let password = Keychain.password(for: account.id) ?? ""
         if password.isEmpty && Keychain.isDenied(account.id) {
@@ -131,7 +143,9 @@ final class MailChecker: ObservableObject {
             let snapshot = try await IMAPService.fetchUnread(account: account, password: password,
                                                              knownHeaders: Set(cached.keys))
             // Tài khoản có thể đã bị xoá/sửa trong lúc đang kiểm tra.
-            guard store.accounts.contains(where: { $0.id == account.id && $0.enabled }) else { return }
+            guard store.accounts.contains(where: { $0.id == account.id && $0.enabled }),
+                  epoch[account.id, default: 0] == myEpoch else { return }
+            retries[account.id] = nil
 
             // Gộp header vừa tải với cache; bỏ thư không còn chưa đọc.
             var cache = cached.filter { snapshot.unread.contains($0.key) }
@@ -142,10 +156,15 @@ final class MailChecker: ObservableObject {
             if let known = knownKeys[account.id] {
                 // Chỉ thông báo thư mới trong Hộp thư đến (không thông báo Spam).
                 let newKeys = snapshot.unread.subtracting(known).filter { $0.mailbox == account.mailboxName }
-                if !newKeys.isEmpty {
-                    announce(account: account,
-                             newMessages: messages.filter { newKeys.contains($0.key) },
-                             count: newKeys.count)
+                let fresh = messages.filter { newKeys.contains($0.key) }
+                // Bỏ thư vừa chuyển về từ Spam (xem `movedBack`).
+                let toAnnounce = fresh.filter { m in
+                    guard let id = m.messageID else { return true }
+                    return movedBack.remove(id) == nil
+                }
+                let count = newKeys.count - (fresh.count - toAnnounce.count)
+                if count > 0 {
+                    announce(account: account, newMessages: toAnnounce, count: count)
                 }
                 let merged = known.union(snapshot.unread)
                 // Giữ tập này có giới hạn: quá lớn thì chỉ giữ các thư đang chưa đọc.
@@ -168,13 +187,41 @@ final class MailChecker: ObservableObject {
             Task.detached { MessageCache.prune(accountID, keep: unread) }
             prefetch(account, password: password, messages: messages)
         } catch {
-            guard store.accounts.contains(where: { $0.id == account.id }) else { return }
+            guard store.accounts.contains(where: { $0.id == account.id }),
+                  epoch[account.id, default: 0] == myEpoch else { return }
             var status = statuses[account.id] ?? Status()
+            if scheduleRetry(account, after: error) {
+                // Lỗi mạng tạm thời: chưa báo lỗi, thử lại sớm thay vì đợi hết chu kỳ.
+                status.isChecking = false
+                statuses[account.id] = status
+                return
+            }
             status.error = error.localizedDescription
             status.isChecking = false
             status.lastChecked = Date()
             statuses[account.id] = status
         }
+    }
+
+    /// Lỗi kết nối/hết giờ thường chỉ là tạm thời: thử lại sau 15 giây, 45 giây rồi mới báo lỗi.
+    private func scheduleRetry(_ account: MailAccount, after error: Error) -> Bool {
+        guard let imap = error as? IMAPError else { return false }
+        switch imap {
+        case .connectionFailed, .timeout, .closed: break
+        default: return false
+        }
+        let attempt = retries[account.id, default: 0]
+        guard attempt < Self.retryDelays.count else { return false }
+        retries[account.id] = attempt + 1
+        let delay = Self.retryDelays[attempt]
+        let expected = epoch[account.id, default: 0]
+        Task {
+            try? await Task.sleep(nanoseconds: delay * 1_000_000_000)
+            guard !screenAsleep, epoch[account.id, default: 0] == expected,
+                  let current = store.accounts.first(where: { $0.id == account.id && $0.enabled }) else { return }
+            await check(current)
+        }
+        return true
     }
 
     // MARK: - Thao tác
@@ -240,6 +287,7 @@ final class MailChecker: ObservableObject {
     /// "Không phải spam": chuyển về Hộp thư đến. Thư sẽ xuất hiện lại ở nhóm Hộp thư đến sau lần kiểm tra kế tiếp.
     func notSpam(_ account: MailAccount, message: MailMessage) {
         guard message.isSpam else { return }
+        if let id = message.messageID { movedBack.insert(id) }
         removeLocally(account, keys: [message.key])
         perform(account, "chuyển khỏi Spam", [message.key]) { pw, mailbox, uids in
             try await IMAPService.moveToInbox(account: account, password: pw, from: mailbox, uids: uids)

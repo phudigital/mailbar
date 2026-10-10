@@ -159,9 +159,16 @@ Mọi thao tác nhận `MailMessage` hoặc `MessageKey`. `perform` **gom theo t
 |---|---|---|
 | Danh sách tài khoản (`[MailAccount]`, JSON) | `UserDefaults` | `accounts.v1` |
 | Mật khẩu ứng dụng | Keychain, generic password | service `com.phudigital.MailBar`, account = `MailAccount.id.uuidString` |
-| Tuỳ chọn | `UserDefaults` | xem `Prefs` trong `Storage.swift`: `checkInterval` (giây, mặc định 120), `notificationsEnabled`, `notificationSound`, `showCount`, `markReadOnOpen`, `preferPlainText`, `prefetchMessages`, `autoCheckUpdates`, `lastUpdateCheck`, `notifiedUpdateVersion` |
+| Tuỳ chọn | `UserDefaults` | xem `Prefs` trong `Storage.swift`: `checkInterval` (giây, mặc định 120), `notificationsEnabled`, `notificationSound`, `showCount`, `markReadOnOpen`, `preferPlainText`, `smartActions`, `prefetchMessages`, `autoCheckUpdates`, `lastUpdateCheck`, `notifiedUpdateVersion` |
 | Trạng thái hộp thư, `knownKeys` | Chỉ trong bộ nhớ | mất khi thoát app (cố ý) |
 | Nội dung thư tải sẵn (RFC 822 thô) | `~/Library/Caches/<bundle id>/Messages/<UUID tài khoản>/<fnv(mailbox)>_<uid>.eml` | xem `MessageCache` (mục 3.6); bật/tắt bằng `Prefs.prefetchMessages` |
+
+### 3.6a Độ bền của `MailChecker.check` (2.0)
+
+- `epoch[account.id]` tăng khi `reset`/tài khoản bị xoá/tắt; `check` ghi lại epoch lúc bắt đầu và **bỏ kết quả** nếu epoch đã đổi (tránh check cũ ghi đè trạng thái sau khi sửa tài khoản).
+- Lỗi `connectionFailed`/`timeout`/`closed` → `scheduleRetry` thử lại sau 15 s, 45 s (`retryDelays`) rồi mới đặt `status.error`; `retries` về 0 khi thành công.
+- `movedBack` (Message-ID thư vừa "Không phải spam") để `announce` bỏ qua thư đó khi nó hiện lại ở INBOX với UID mới.
+- `IMAPService`: literal ≤ 32 MB, dòng ≤ 1 MB; `uidChunks` chia UID thành đợt 400 cho `setSeen`/`move`; lỗi `commandFailed` ở thư mục Spam chỉ thành `spamNote`.
 
 ### 3.6 Tải sẵn nội dung thư (`MessageCache`)
 
@@ -201,6 +208,7 @@ Mọi thao tác nhận `MailMessage` hoặc `MessageKey`. `perform` **gom theo t
 ### `Storage.swift`
 - `Keychain` (`@MainActor`): `password(for:)`, `setPassword(_:for:)`, `deletePassword(for:)`, `isDenied(_:)`.
   - **Cache trong bộ nhớ**: mỗi phiên chỉ đọc Keychain một lần cho mỗi tài khoản, vì mỗi lần đọc macOS có thể hiện hộp thoại xin quyền. Nếu người dùng bấm Deny thì đánh dấu `denied` và không hỏi lại; `MailChecker.check` sẽ hiện lỗi hướng dẫn.
+  - `setPassword` trả `Bool` (false = Keychain từ chối ghi, `AccountEditor.save` báo lỗi và không lưu tài khoản); chỉ `errSecUserCanceled`/`errSecAuthFailed`/`errSecInteractionNotAllowed` mới đánh dấu `denied`.
   - `setPassword` **xoá rồi thêm mới** (không dùng update), để bản app hiện tại trở thành chủ của mục Keychain và đọc được mà không bị hỏi.
 - `AccountStore`: `@Published accounts`, cùng `upsert`, `remove` (xoá luôn mật khẩu Keychain) và `move`. Mỗi lần thay đổi đều tự `save()`.
 - `Prefs`: hằng số khoá `UserDefaults` và `registerDefaults()` (gồm `prefetchMessages`, mặc định bật).
@@ -226,6 +234,7 @@ Mọi thao tác nhận `MailMessage` hoặc `MessageKey`. `perform` **gom theo t
 - **Kỹ thuật chính**: chuyển toàn bộ byte thành chuỗi theo ánh xạ 1:1 byte → Unicode scalar (ISO-8859-1) để tách cấu trúc MIME. Sau đó `bytes(_:)` chuyển ngược lại byte trước khi giải mã base64, quoted-printable và charset.
 - Duyệt đệ quy `multipart/*` (tối đa 10 tầng). Lấy `text/html` và `text/plain` đầu tiên gặp được. Phần có `Content-Disposition: attachment`, `message/rfc822`, hoặc phần không phải text mà có tên tệp thì đưa vào `attachments` (bỏ qua ảnh inline).
 - `HeaderValue`: tách `value; key=val; …`, có hỗ trợ RFC 2231 `filename*=utf-8''…`.
+- `ParsedMessage.plainText`/`hasRemoteContent` là thuộc tính **lưu**, tính một lần ở `finalize()` cuối `parse` (không phải computed property — regex trên cả HTML mỗi lần vẽ từng làm đơ UI). `HTMLText.strip` cắt đầu vào ở 1,5 triệu ký tự.
 - `ParsedMessage.displayHTML`: ưu tiên HTML; nếu chỉ có text thì escape rồi bọc trong `<pre-wrap>`. `hasRemoteContent` dò `src/background/url()` trỏ tới `http(s)`.
 
 ### `MailChecker.swift`
@@ -245,10 +254,10 @@ Mọi thao tác nhận `MailMessage` hoặc `MessageKey`. `perform` **gom theo t
 - `AccountSection`: tiêu đề tài khoản, badge, menu `⋯` (mở web, đánh dấu tất cả đã đọc, kiểm tra lại), dòng lỗi hoặc trạng thái, danh sách thư INBOX. Nếu `checkSpam` bật thì thêm tiêu đề cam "Spam · n chưa đọc" và danh sách thư spam.
 - `MessageRow`: bấm vào để đọc; khi rê chuột hiện `RowAction` (đã đọc / [không phải spam, chỉ thư Spam] / xoá / [đánh dấu spam, chỉ thư INBOX, icon `exclamationmark.octagon` kế nút xoá] / mở web). Chấm màu xanh là thư INBOX, cam là Spam.
 - Chân bảng: Cài đặt…, số phiên bản `vX.Y.Z` và nút `?` (cả hai mở tab Giới thiệu), Thoát.
-- `ReaderView`: tải thư qua `checker.loadMessage`. Nếu bật `markReadOnOpen` thì tự đánh dấu đã đọc. Thanh công cụ có Quay lại (Esc), Đã đọc/Chưa đọc, Xoá, Spam (chỉ thư INBOX), Mở web. Nếu thư có nội dung từ xa thì hiện thanh vàng "Tải hình ảnh".
+- `ReaderView`: tải thư qua `checker.loadMessage`; sau đó (nếu `Prefs.smartActions`) chạy `SmartActions.detect` trong `Task.detached` và hiện `SmartActionsBox` (sao chép OTP/link, mở link chỉ khi bấm). Tự đánh dấu đã đọc chỉ khi `!Task.isCancelled`. Nếu bật `markReadOnOpen` thì tự đánh dấu đã đọc. Thanh công cụ có Quay lại (Esc), Đã đọc/Chưa đọc, Xoá, Spam (chỉ thư INBOX), Mở web. Nếu thư có nội dung từ xa thì hiện thanh vàng "Tải hình ảnh".
 
 ### `MailWebView.swift`
-- `MailWebView` (`NSViewRepresentable`): `allowsContentJavaScript = false`. Link (kể cả `target=_blank`) mở bằng trình duyệt mặc định. Chỉ tải lại khi `html` hoặc `allowRemote` thay đổi (`loadedKey`).
+- `MailWebView` (`NSViewRepresentable`): `allowsContentJavaScript = false`, `websiteDataStore = .nonPersistent()`. Link (kể cả `target=_blank`) chỉ mở khi scheme là http/https/mailto (`Coordinator.openExternally`); điều hướng main-frame khác `about:` bị huỷ; không dựng được bộ chặn từ xa thì không tải thư (fail-closed). Chỉ tải lại khi `html` hoặc `allowRemote` thay đổi (`loadedKey`).
   - Chèn CSS `img{max-width:100%}`. Sau khi tải xong (`didFinish`), đo `scrollWidth`; nếu rộng hơn bảng thì đặt `pageZoom` (tối thiểu 0.5) để thu nhỏ cho vừa. `evaluateJavaScript` của app **vẫn chạy** dù JS của nội dung thư đã tắt (đã kiểm chứng).
 - `RemoteContentBlocker`: biên dịch một lần `WKContentRuleList` chặn `^https?://`.
 

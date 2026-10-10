@@ -5,3 +5,4 @@ dist/
 *.xcodeproj/
 .swiftpm/
 .build-osize/
+.claude/

@@ -3,6 +3,34 @@
 Định dạng theo [Keep a Changelog](https://keepachangelog.com/vi/1.1.0/), phiên bản theo [Semantic Versioning](https://semver.org/lang/vi/):
 `MAJOR.MINOR.PATCH`. Tăng MAJOR khi thay đổi lớn hoặc không tương thích dữ liệu, MINOR khi thêm tính năng, PATCH khi sửa lỗi.
 
+## [2.0.0] — 2026-10-10
+
+Bản tổng rà soát: 9 reviewer chạy song song, mỗi phát hiện được 2 agent phản biện độc lập; các lỗi dưới đây đều được xác nhận trên code thật.
+
+### Sửa lỗi nghiêm trọng / bảo mật
+- **Crash khi máy chủ gửi độ dài literal IMAP âm**, và phình RAM khi literal/dòng quá lớn: giờ từ chối literal > 32 MB, dòng > 1 MB, chỉ nhận chữ số.
+- **Link trong thư**: chỉ mở `http`/`https`/`mailto` bằng ứng dụng mặc định (trước đây mở mọi scheme); chặn chuyển trang ngay trong bảng (meta refresh, form); chặn nội dung từ xa giờ **fail-closed** (không dựng được bộ chặn thì không tải thư); WebView không còn lưu cookie/cache lên đĩa.
+- **Trình đọc không còn đơ** với thư HTML lớn: `plainText`/`hasRemoteContent` tính một lần lúc phân tích (ngoài main thread) thay vì chạy regex mỗi lần vẽ; HTML > 1,5 triệu ký tự bị cắt trước khi bỏ thẻ; thư văn bản > 200.000 ký tự được rút gọn. HTML chỉ có ảnh tự chuyển sang chế độ HTML thay vì trang trắng.
+
+### Sửa lỗi
+- **Lỗi thư mục Spam không còn làm hỏng cả lần kiểm tra** (mất thông báo Hộp thư đến): hạ thành ghi chú Spam.
+- "Đánh dấu tất cả đã đọc", xoá, chuyển spam với hàng nghìn thư: chia đợt ~400 UID mỗi lệnh (máy chủ hay từ chối dòng quá dài).
+- Đổi/sửa tài khoản rồi lưu: lần kiểm tra cũ đang chạy dở không còn ghi đè trạng thái mới (thêm "thế hệ" cấu hình).
+- "Không phải spam" không còn gây thông báo "thư mới" giả cho thư vừa chuyển về.
+- **Lỗi mạng tạm thời** (Wi-Fi chưa lên lại sau khi thức dậy): tự thử lại sau 15 giây và 45 giây trước khi báo lỗi, thay vì kẹt lỗi tới hết chu kỳ.
+- Đóng trình đọc trong lúc thư đang tải không còn tự đánh dấu đã đọc.
+- Keychain: báo lỗi khi không lưu được mật khẩu (trước đây im lặng báo đã lưu); chỉ coi là "Deny" khi người dùng thật sự từ chối, lỗi tạm thì lần sau thử lại.
+- Mở Gmail đúng tài khoản với email chứa `+`, `&`, `=`, `#`.
+- Banner cập nhật trong bảng menubar hiện tiến trình khi đang cài và báo lỗi (nút Thử lại) thay vì biến mất.
+- Lệnh `ID` gửi đúng phiên bản app thay vì "1.0".
+- Cảnh báo cam khi tắt SSL/TLS cho một tài khoản.
+
+### Tính năng được nối lại
+- **Nhận diện mã xác minh (OTP) và link xác minh trong trình đọc** (ghi trong 1.1.0 nhưng phần giao diện bị thiếu trong mã nguồn): khung đầu thư có nút **Sao chép** mã (đánh dấu concealed cho clipboard), **Mở** và **Sao chép link** kèm tên miền đích; cảnh báo với thư Spam; không bao giờ tự mở link. Chạy ngoài main thread. Công tắc ở Cài đặt → Chung.
+
+### Ghi chú
+- Các phát hiện còn lại (độ chính xác header `From:` giả, bảng charset gb2312/windows-1252, entity HTML hiếm, RFC 2231 nối đoạn, `parseDate` dùng chung formatter, giải phóng WKWebView khi bảng đóng, cập nhật rollback…) đã được xác nhận nhưng chưa sửa; sẽ làm ở bản sau.
+
 ## [1.4.0] — 2026-10-10
 
 ### Tính năng

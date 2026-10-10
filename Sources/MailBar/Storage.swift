@@ -35,24 +35,30 @@ enum Keychain {
             openUpAccessIfNeeded(id)
             return password
         }
-        if status != errSecItemNotFound { denied.insert(id) }
+        // Chỉ coi là "Deny" khi người dùng từ chối/xác thực hỏng; lỗi khác (keychain đang khoá, lỗi tạm) thì lần sau thử lại.
+        if status == errSecUserCanceled || status == errSecAuthFailed || status == errSecInteractionNotAllowed {
+            denied.insert(id)
+        }
         return nil
     }
 
     /// true nếu người dùng đã từ chối quyền đọc Keychain trong phiên này.
     static func isDenied(_ id: UUID) -> Bool { denied.contains(id) }
 
-    static func setPassword(_ password: String, for id: UUID) {
+    /// `false` nếu Keychain từ chối ghi (khi đó mật khẩu KHÔNG được lưu, caller nên báo lỗi).
+    @discardableResult
+    static func setPassword(_ password: String, for id: UUID) -> Bool {
         // Xoá rồi thêm mới để bản app hiện tại trở thành "chủ" của mục Keychain (không bị hỏi quyền khi đọc).
         SecItemDelete(query(id) as CFDictionary)
         var q = query(id)
         q[kSecValueData as String] = Data(password.utf8)
         q[kSecAttrLabel as String] = "MailBar"
         if let access = openAccess() { q[kSecAttrAccess as String] = access }
-        SecItemAdd(q as CFDictionary, nil)
+        guard SecItemAdd(q as CFDictionary, nil) == errSecSuccess else { return false }
         cache[id] = password
         denied.remove(id)
         markOpened(id)
+        return true
     }
 
     // MARK: - Quyền truy cập mục Keychain
@@ -177,6 +183,7 @@ enum Prefs {
     static let markReadOnOpen = "markReadOnOpen"
     static let preferPlainText = "preferPlainText"
     static let prefetchMessages = "prefetchMessages"
+    static let smartActions = "smartActions"          // nhận diện mã xác minh / link xác minh trong trình đọc
     static let autoCheckUpdates = "autoCheckUpdates"
     static let lastUpdateCheck = "lastUpdateCheck"            // Date
     static let notifiedUpdateVersion = "notifiedUpdateVersion"  // phiên bản đã báo bằng thông báo
@@ -190,6 +197,7 @@ enum Prefs {
             markReadOnOpen: true,
             preferPlainText: true,
             prefetchMessages: true,
+            smartActions: true,
             autoCheckUpdates: true,
         ])
     }

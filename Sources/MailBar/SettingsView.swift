@@ -275,6 +275,11 @@ private struct AccountEditor: View {
                 TextField("Máy chủ", text: $draft.host, prompt: Text("imap.example.com"))
                 TextField("Cổng", value: $draft.port, format: .number.grouping(.never))
                 Toggle("SSL/TLS", isOn: $draft.useTLS)
+                if !draft.useTLS {
+                    Label("Kết nối không mã hoá: mật khẩu và thư đi dạng rõ trên mạng.", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
                 TextField("Hộp thư", text: $draft.mailbox, prompt: Text("INBOX"))
             }
 
@@ -367,7 +372,10 @@ private struct AccountEditor: View {
 
     private func save() {
         let account = normalized()
-        Keychain.setPassword(password, for: account.id)
+        guard Keychain.setPassword(password, for: account.id) else {
+            testState = .failure("Keychain không cho lưu mật khẩu (có thể đang bị khoá). Mở Keychain Access, mở khoá \"login\" rồi bấm Lưu lại.")
+            return
+        }
         loadedPassword = password
         store.upsert(account)
         draft = account
@@ -389,6 +397,7 @@ private struct GeneralSettingsView: View {
     @AppStorage(Prefs.markReadOnOpen) private var markReadOnOpen = true
     @AppStorage(Prefs.preferPlainText) private var preferPlainText = true
     @AppStorage(Prefs.prefetchMessages) private var prefetchMessages = true
+    @AppStorage(Prefs.smartActions) private var smartActions = true
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var launchError: String?
 
@@ -420,6 +429,10 @@ private struct GeneralSettingsView: View {
                 Toggle(isOn: $preferPlainText) {
                     Text("Đọc thư dạng văn bản (nhẹ hơn)")
                     Text("Không dùng WebKit khi mở thư. Bấm nút HTML trong thư để xem bản đầy đủ.")
+                }
+                Toggle(isOn: $smartActions) {
+                    Text("Nhận diện mã xác minh và link xác minh")
+                    Text("Trong trình đọc thư, hiện nút sao chép mã (OTP) và mở link xác minh. App không bao giờ tự mở link.")
                 }
                 Toggle(isOn: $prefetchMessages) {
                     Text("Tải sẵn nội dung thư mới")

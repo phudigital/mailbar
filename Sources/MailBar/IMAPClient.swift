@@ -43,6 +43,10 @@ final class IMAPConnection: @unchecked Sendable {
     private var tagCounter = 0
     private var didTimeout = false
 
+    /// Giới hạn phòng máy chủ lỗi/độc hại làm phình RAM: một literal (thư ~2 MB/lần tải) và một dòng chữ.
+    private static let maxLiteral = 32 * 1024 * 1024
+    private static let maxLine = 1024 * 1024
+
     init(host: String, port: Int, useTLS: Bool) {
         let params: NWParameters = useTLS ? .tls : .tcp
         let nwPort = NWEndpoint.Port(rawValue: UInt16(clamping: port)) ?? 993
@@ -151,6 +155,7 @@ final class IMAPConnection: @unchecked Sendable {
                 buffer.removeSubrange(buffer.startIndex..<r.upperBound)
                 return line
             }
+            if buffer.count > Self.maxLine { throw IMAPError.commandFailed("Dòng phản hồi quá dài") }
             try await receiveMore()
         }
     }
@@ -171,6 +176,7 @@ final class IMAPConnection: @unchecked Sendable {
             guard let n = Self.literalLength(line) else {
                 return IMAPResponse(text: text, literals: literals)
             }
+            guard n >= 0, n <= Self.maxLiteral else { throw IMAPError.commandFailed("Literal không hợp lệ") }
             literals.append(try await readBytes(n))
         }
     }
@@ -178,7 +184,9 @@ final class IMAPConnection: @unchecked Sendable {
     private static func literalLength(_ line: String) -> Int? {
         guard line.hasSuffix("}"), let open = line.lastIndex(of: "{") else { return nil }
         let digits = line[line.index(after: open)..<line.index(before: line.endIndex)]
-        return Int(digits)
+        // Chỉ nhận chữ số; số quá lớn (tràn Int) trả Int.max để nơi gọi từ chối.
+        guard !digits.isEmpty, digits.allSatisfy({ $0.isASCII && $0.isNumber }) else { return nil }
+        return Int(digits) ?? Int.max
     }
 }
 
@@ -217,14 +225,20 @@ enum IMAPService {
             var spamNote: String?
 
             if account.checkSpam {
-                if let junk = try await findFolder(conn, attribute: "\\junk", names: spamNames) {
-                    let spam = try await fetchUnreadHeaders(conn, mailbox: junk, isSpam: true,
-                                                            limit: spamLimit, skip: known(junk))
-                    unread.formUnion(spam.uids.map { MessageKey(mailbox: junk, uid: $0) })
-                    display += spam.display.map { MessageKey(mailbox: junk, uid: $0) }
-                    fetched += spam.fetched
-                } else {
-                    spamNote = "Không tìm thấy thư mục Spam trên máy chủ"
+                // Lỗi lệnh ở Spam (NO/BAD) chỉ hạ thành ghi chú; kết quả INBOX vẫn trả về.
+                // Lỗi kết nối/timeout vẫn ném ra như cũ.
+                do {
+                    if let junk = try await findFolder(conn, attribute: "\\junk", names: spamNames) {
+                        let spam = try await fetchUnreadHeaders(conn, mailbox: junk, isSpam: true,
+                                                                limit: spamLimit, skip: known(junk))
+                        unread.formUnion(spam.uids.map { MessageKey(mailbox: junk, uid: $0) })
+                        display += spam.display.map { MessageKey(mailbox: junk, uid: $0) }
+                        fetched += spam.fetched
+                    } else {
+                        spamNote = "Không tìm thấy thư mục Spam trên máy chủ"
+                    }
+                } catch IMAPError.commandFailed(let m) {
+                    spamNote = "Không đọc được thư mục Spam: \(m)"
                 }
             }
             return InboxSnapshot(unread: unread, display: display, fetched: fetched, spamNote: spamNote)
@@ -312,7 +326,9 @@ enum IMAPService {
         guard !uids.isEmpty else { return }
         try await withSession(account, password) { conn, _ in
             try await conn.command("SELECT \(quote(mailbox))")
-            try await conn.command("UID STORE \(uidSet(uids)) \(seen ? "+" : "-")FLAGS.SILENT (\\Seen)")
+            for chunk in uidChunks(uids) {
+                try await conn.command("UID STORE \(uidSet(chunk)) \(seen ? "+" : "-")FLAGS.SILENT (\\Seen)")
+            }
         }
     }
 
@@ -350,14 +366,16 @@ enum IMAPService {
     private static func move(_ conn: IMAPConnection, caps: Set<String>, from: String, to: String,
                              uids: [UInt32]) async throws {
         try await conn.command("SELECT \(quote(from))")
-        let set = uidSet(uids)
-        if caps.contains("MOVE") {
-            try await conn.command("UID MOVE \(set) \(quote(to))")
-        } else {
-            try await conn.command("UID COPY \(set) \(quote(to))")
-            try await conn.command("UID STORE \(set) +FLAGS.SILENT (\\Deleted \\Seen)")
-            if caps.contains("UIDPLUS") {
-                try await conn.command("UID EXPUNGE \(set)")
+        for chunk in uidChunks(uids) {
+            let set = uidSet(chunk)
+            if caps.contains("MOVE") {
+                try await conn.command("UID MOVE \(set) \(quote(to))")
+            } else {
+                try await conn.command("UID COPY \(set) \(quote(to))")
+                try await conn.command("UID STORE \(set) +FLAGS.SILENT (\\Deleted \\Seen)")
+                if caps.contains("UIDPLUS") {
+                    try await conn.command("UID EXPUNGE \(set)")
+                }
             }
         }
     }
@@ -383,7 +401,7 @@ enum IMAPService {
         }
 
         // Một số máy chủ (Lark/Feishu, NetEase...) yêu cầu lệnh ID; máy chủ khác có thể từ chối — bỏ qua lỗi.
-        _ = try? await conn.command("ID (\"name\" \"MailBar\" \"version\" \"1.0\")")
+        _ = try? await conn.command("ID (\"name\" \"MailBar\" \"version\" \(quote(clientVersion)))")
 
         var caps = Set<String>()
         for resp in (try? await conn.command("CAPABILITY")) ?? [] where resp.text.uppercased().hasPrefix("* CAPABILITY") {
@@ -394,6 +412,10 @@ enum IMAPService {
         _ = try? await conn.command("LOGOUT")
         return result
     }
+
+    /// Phiên bản app gửi trong lệnh ID (đọc từ Info.plist; chạy ngoài .app thì "dev").
+    private static let clientVersion =
+        (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "dev"
 
     private static let spamNames = [
         "[Gmail]/Spam", "[Google Mail]/Spam", "Spam", "Junk", "Junk E-mail", "Junk Email",
@@ -461,6 +483,12 @@ enum IMAPService {
             i = j + 1
         }
         return parts.joined(separator: ",")
+    }
+
+    /// Chia UID (đã sắp xếp, bỏ trùng) thành các đợt để mỗi lệnh không quá dài (máy chủ hay giới hạn vài KB/dòng).
+    static func uidChunks(_ uids: [UInt32], size: Int = 400) -> [[UInt32]] {
+        let sorted = Array(Set(uids)).sorted()
+        return stride(from: 0, to: sorted.count, by: size).map { Array(sorted[$0..<min($0 + size, sorted.count)]) }
     }
 
     private static func quote(_ s: String) -> String {

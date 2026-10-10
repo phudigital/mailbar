@@ -70,6 +70,26 @@ struct MenuContentView: View {
             if let release = updater.available {
                 Divider()
                 updateBanner(release)
+            } else if case .installing(let message) = updater.state {
+                Divider()
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text(message).font(.callout)
+                    Spacer()
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+            } else if case .failed(let message) = updater.state, message.hasPrefix("Cập nhật thất bại") {
+                Divider()
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                    Text(message).font(.caption).lineLimit(2)
+                    Spacer()
+                    Button("Thử lại") { Task { await updater.check() } }
+                        .buttonStyle(.borderless)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
             }
             Divider()
             footer
@@ -381,6 +401,8 @@ private struct ReaderView: View {
     let onClose: () -> Void
 
     @AppStorage(Prefs.preferPlainText) private var preferPlainText = true
+    @AppStorage(Prefs.smartActions) private var smartActions = true
+    @State private var smart = SmartContent()
     @State private var parsed: ParsedMessage?
     @State private var loadError: String?
     @State private var allowRemote = false
@@ -402,6 +424,10 @@ private struct ReaderView: View {
             Divider()
             headerInfo
             Divider()
+            if !smart.isEmpty {
+                SmartActionsBox(content: smart, isSpam: message.isSpam)
+                Divider()
+            }
 
             if let parsed {
                 if rendersHTML {
@@ -422,7 +448,7 @@ private struct ReaderView: View {
                         .background(parsed.html != nil ? Color.white : Color.clear)
                 } else {
                     ScrollView {
-                        Text(parsed.plainText ?? "")
+                        Text(Self.capped(parsed.plainText ?? ""))
                             .font(.system(size: 12.5))
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -549,15 +575,93 @@ private struct ReaderView: View {
         .padding(.vertical, 8)
     }
 
+    /// Thư văn bản quá lớn làm Text() đứng giao diện: chỉ hiện phần đầu.
+    private static func capped(_ text: String) -> String {
+        guard text.count > 200_000 else { return text }
+        return String(text.prefix(200_000)) + "\n\n…(đã rút gọn — bấm HTML hoặc Mở web để xem đủ)"
+    }
+
     private func load() async {
         loadError = nil
         do {
-            parsed = try await checker.loadMessage(account, message: message)
+            let result = try await checker.loadMessage(account, message: message)
+            // Người dùng đã thoát trình đọc trong lúc tải: không tự đánh dấu đã đọc.
+            guard !Task.isCancelled else { return }
+            parsed = result
             if markReadOnOpen && isUnread {
                 checker.markRead(account, messages: [message])
             }
+            if smartActions {
+                // Nhận diện chạy ngoài main thread; không bao giờ tự tải/mở link.
+                let content = await Task.detached(priority: .utility) { SmartActions.detect(in: result) }.value
+                if !Task.isCancelled { smart = content }
+            }
         } catch {
             loadError = error.localizedDescription
+        }
+    }
+}
+
+// MARK: - Mã xác minh / link xác minh
+
+/// Khung đầu thư: nút sao chép mã (OTP) và mở/sao chép link xác minh. Chỉ hành động khi người dùng bấm.
+private struct SmartActionsBox: View {
+    let content: SmartContent
+    let isSpam: Bool
+    @State private var copiedID: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(content.codes) { code in
+                HStack {
+                    Image(systemName: "number.square").foregroundStyle(Color.accentColor)
+                    Text(code.display)
+                        .font(.system(size: 15, weight: .semibold, design: .monospaced))
+                        .textSelection(.enabled)
+                    Spacer()
+                    Button(copiedID == code.id ? "Đã chép" : "Sao chép") { copy(code.value, id: code.id) }
+                        .controlSize(.small)
+                }
+            }
+            if isSpam && !content.links.isEmpty {
+                Label("Thư nằm trong Spam — cẩn thận trước khi mở link.", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+            ForEach(content.links) { link in
+                HStack {
+                    Image(systemName: "link").foregroundStyle(Color.accentColor)
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(link.kind.title).font(.system(size: 12, weight: .semibold))
+                        Text(link.host).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    Spacer()
+                    Button("Mở") {
+                        if let scheme = link.url.scheme?.lowercased(), ["http", "https"].contains(scheme) {
+                            NSWorkspace.shared.open(link.url)
+                        }
+                    }
+                    .controlSize(.small)
+                    Button(copiedID == link.id ? "Đã chép" : "Sao chép link") { copy(link.url.absoluteString, id: link.id) }
+                        .controlSize(.small)
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.accentColor.opacity(0.08))
+    }
+
+    private func copy(_ text: String, id: String) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+        // Cho trình quản lý lịch sử clipboard biết đây là dữ liệu nhạy cảm, đừng lưu.
+        pasteboard.setData(Data(), forType: NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType"))
+        copiedID = id
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            if copiedID == id { copiedID = nil }
         }
     }
 }

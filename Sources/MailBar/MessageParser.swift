@@ -11,6 +11,10 @@ struct ParsedMessage {
     var html: String?
     var text: String?
     var attachments: [String] = []
+    /// Bản văn bản nhẹ (không cần WebKit): text/plain, hoặc HTML đã bỏ thẻ; `nil` nếu rỗng. Tính MỘT lần lúc parse
+    /// (ngoài main thread) — trước đây là computed property chạy regex cả HTML mỗi lần vẽ.
+    var plainText: String?
+    var hasRemoteContent = false
 
     /// HTML để hiển thị: ưu tiên phần HTML, nếu không có thì bọc phần chữ thuần.
     var displayHTML: String {
@@ -26,15 +30,19 @@ struct ParsedMessage {
         """
     }
 
-    /// Bản văn bản để hiển thị nhẹ (không cần WebKit): phần text/plain, hoặc HTML đã bỏ thẻ.
-    var plainText: String? {
-        if let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return text }
-        return html.map(HTMLText.strip)
-    }
-
-    var hasRemoteContent: Bool {
-        html?.range(of: #"(src|background)\s*=\s*["']?https?:"#, options: [.regularExpression, .caseInsensitive]) != nil
-            || html?.range(of: #"url\(\s*["']?https?:"#, options: [.regularExpression, .caseInsensitive]) != nil
+    /// Tính `plainText` và `hasRemoteContent` (gọi một lần cuối `MessageParser.parse`).
+    fileprivate mutating func finalize() {
+        if let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            plainText = text
+        } else if let html {
+            let stripped = HTMLText.strip(html)
+            // HTML chỉ có ảnh → không có chữ: để nil cho trình đọc chuyển sang HTML.
+            plainText = stripped.isEmpty ? nil : stripped
+        }
+        hasRemoteContent = html.map {
+            $0.range(of: #"(src|background)\s*=\s*["']?https?:"#, options: [.regularExpression, .caseInsensitive]) != nil
+                || $0.range(of: #"url\(\s*["']?https?:"#, options: [.regularExpression, .caseInsensitive]) != nil
+        } ?? false
     }
 }
 
@@ -59,6 +67,7 @@ enum MessageParser {
         result.messageID = headers["message-id"].map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "<> \t")) }
 
         walk(headers: headers, body: body, into: &result, depth: 0)
+        result.finalize()
         return result
     }
 
@@ -191,8 +200,11 @@ enum HTMLText {
         "lsquo": "‘", "rsquo": "’", "ldquo": "“", "rdquo": "”", "bull": "•", "middot": "·",
     ]
 
+    /// Quá lớn thì cắt bớt trước khi chạy regex (thư độc hại/bản tin khổng lồ không được làm đứng app).
+    private static let maxInput = 1_500_000
+
     static func strip(_ html: String) -> String {
-        var s = html
+        var s = html.count > maxInput ? String(html.prefix(maxInput)) : html
         func sub(_ r: NSRegularExpression, _ t: String) { s = r.stringByReplacingMatches(in: s, range: NSRange(s.startIndex..., in: s), withTemplate: t) }
         sub(dropBlocks, "")
         sub(lineBreaks, "\n")

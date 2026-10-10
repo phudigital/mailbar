@@ -128,7 +128,9 @@ struct MailAccount: Codable, Identifiable, Hashable {
     }
 
     func webURL(for message: MailMessage? = nil) -> URL? {
-        let emailEncoded = email.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? email
+        // `.urlQueryAllowed` để nguyên `+ & = #` — địa chỉ như a+b@gmail.com hoặc có `&` sẽ mở sai tài khoản.
+        let allowed = CharacterSet.urlQueryAllowed.subtracting(CharacterSet(charactersIn: "+&=#"))
+        let emailEncoded = email.addingPercentEncoding(withAllowedCharacters: allowed) ?? email
         var base = webURL.replacingOccurrences(of: "{email}", with: emailEncoded)
         if base.isEmpty { return nil }
         if !base.contains("://") { base = "https://" + base }
